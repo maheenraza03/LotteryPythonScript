@@ -1,122 +1,152 @@
+# importing the correct packages 
 import requests
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+from datetime import datetime
 
-# api key for accessing the lottery api
-API_KEY = "YOUR_API_KEY_HERE"
+# api key from rapidapi from "Canda Lottery"
+API_KEY = "ur api key"
 
-# headers (based on the rapidapi code snippets)
+# defining the headers for the api link
 headers = {
     "x-rapidapi-key": API_KEY,
     "x-rapidapi-host": "canada-lottery.p.rapidapi.com"
 }
 
-# get the lottery results from the lottery api and get the json response file
+# Function: fetch_lotto_max_results
+# This function is to grab the winning numbers of a specific year from the RapidAPI url
+# The year is inputted by the user
 def fetch_lotto_max_results(year):
-    # api URL
     url = f"https://canada-lottery.p.rapidapi.com/6-49/years/{year}"
-    # get the response from the api
     response = requests.get(url, headers=headers)
-
-    # if the response is successful, retrieve the JSON with the response
     if response.status_code == 200:
-        return response.json()  
-    # otherwise print an error message
+        return response.json()
     else:
-        print(f"Error: {response.status_code}")
-        print(response.text)
+        print(f"Error: {response.status_code} - {response.text}")
         return None
 
-# defining the neural network
-class LottoPredictionModel(nn.Module):
-    def __init__(self):
-        super(LottoPredictionModel, self).__init__()
-        self.fc1 = nn.Linear(6, 128)  # the input layer (takes in the 6 previous winning numbers)
-        self.fc2 = nn.Linear(128, 64) # the hidden layer (analyzes the complex relationships between the inputs, transforms the data into a smaller feature space)
-        self.fc3 = nn.Linear(64, 6)   # the output layer (makes an output for the 6 predicted winning numbers based on the 64 features from the hidden layer)
-        self.dropout = nn.Dropout(0.5) # helps prevent overfitting
 
+# Class: LottoModel
+# This class is a custom neural network that subclasses PyTorch
+# Defines a feedforward neural network
+# The input is historical features from previous lottery draws
+class LottoModel(nn.Module):
+    def __init__(self, input_size=18):
+        super(LottoModel, self).__init__()
+        self.fc1 = nn.Linear(input_size, 128)
+        self.dropout = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 6 * 49)
+
+    # Forward Function
+    # Used to predict probablity distributions for 49 different possible numbers for each of the 6 drawns numbers for Lotto 6/49
     def forward(self, x):
-        x = torch.relu(self.fc1(x))  # pass the input data through the input layer, and then apply the activation function
-        x = self.dropout(x) # drop 50% of the features
-        x = torch.relu(self.fc2(x))  # take the output of the input layer and pass it through the hidden layer, and then apply the activation function
-        x = self.fc3(x)  # finally, take the output of the hidden layer and pass it through the output layer to get our new 6 predicted lottery numbers
+        x = torch.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        x = x.view(-1, 6, 49)
         return x
 
-# used to train the model
-def train_model(model, data, labels, num_epochs=100, learning_rate=0.001):
-    criterion = nn.MSELoss()  # MSE loss function (calculates how close the model's predictions are compared to the actual labels)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate) # update the model's parameters during training 
+# Function: train_model
+# Train the neural network
+def train_model(model, X_tensor, y_tensor, num_epochs=150, learning_rate=0.001):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     for epoch in range(num_epochs):
-        model.train() # puts the model on training mode
-        optimizer.zero_grad() # gradients from the previous training step are cleared
-        outputs = model(data) # pass the data through the model
-        loss = criterion(outputs, labels) # calculate the difference between predictions and labels using the MSE function
-        loss.backward() # do backpropagation: computes the gradients of the loss with respect to each model parameter
-        optimizer.step() # update the model parameters
+        model.train()
+        optimizer.zero_grad()
+        outputs = model(X_tensor)
 
-# used to predict the next winning numers
+        loss = 0
+        for i in range(6):
+            loss += criterion(outputs[:, i, :], y_tensor[:, i])
+
+        loss.backward()
+        optimizer.step()
+        if (epoch + 1) % 20 == 0 or epoch == 0:
+            print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}")
+
+# Function: predict_next_numbers
+# Using the trained PyTorch model, it predicts the next set of lottery numbers based on some input features 
+# Predicts 6 different numbers from 1 to 49
 def predict_next_numbers(model, previous_numbers):
-    model.eval() # put the model into evaluation mode
-    with torch.no_grad(): # don't compute gradients
-        input_tensor = torch.tensor(previous_numbers, dtype=torch.float32).unsqueeze(0) # convert the previous numbers to tensor
-        predicted_numbers = model(input_tensor).squeeze(0).numpy() # make the prediction
-        
-        # round the predicted numbers to whole numbers
-        predicted_numbers = np.round(predicted_numbers)
+    model.eval()
+    with torch.no_grad():
+        input_tensor = torch.tensor(previous_numbers, dtype=torch.float32).unsqueeze(0)
+        output = model(input_tensor)
+        predicted_indices = torch.argmax(output, dim=2).squeeze(0).numpy()
+        predicted_numbers = predicted_indices + 1 
         return predicted_numbers
 
-# main function
+# Main Function
+# Asks the user to input the year of their choice
+# It then goes through the above functions 
 def main():
-    # ask for user input for the year
-    user_year = input("Enter a year to fetch 649 results: ")
+    torch.manual_seed(42)
+    np.random.seed(42)
+
+    user_year = input("Enter a year to fetch 649 results (e.g., 2025): ")
 
     try:
-        # convert the string into an int
         user_year = int(user_year)
-        # input the year into the api URL
         lotto_results = fetch_lotto_max_results(user_year)
 
         if lotto_results:
-            # array to store winning numbers for the API
-            all_numbers = []
+            valid_draws = []
 
             for draw in lotto_results:
-                # extract the winning numbers from the response
-                date = draw.get("date")
-                winning_numbers = draw.get("classic", {}).get("numbers", [])
-                # make sure it's only 6 winning numbers
-                if len(winning_numbers) == 6:  
-                    all_numbers.append(winning_numbers)
+                date_str = draw.get("date")
+                numbers = draw.get("classic", {}).get("numbers", [])
+                if len(numbers) == 6 and date_str:
+                    try:
+                        draw_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        valid_draws.append((draw_date, [int(n) for n in numbers]))
+                    except ValueError as e:
+                        print(f"Skipping due to date error: {e}")
+                        continue
 
-            # convert all numbers to numpy array and prepare for training
-            data = np.array(all_numbers[:-1])  # use all except the last draw for training
-            labels = np.array(all_numbers[1:])  # use the next draw as the label
+            if len(valid_draws) < 5:
+                print("Not enough valid draws to train the model.")
+                return
+            
+            # i wanted to see the most recent draws to see what it would return
+            print("\n--- Most Recent Draws ---")
+            for date, nums in valid_draws[:5]:
+                print(f"{date.date()}: {nums}")
+            print("-------------------------\n")
 
-            # normalize data (e.g., scale the numbers between 0 and 1)
-            data = data / np.max(data)
-            labels = labels / np.max(labels)
+            window_size = 3
+            max_lotto_number = 49
 
-            # convert to PyTorch tensors
-            data_tensor = torch.tensor(data, dtype=torch.float32)
-            labels_tensor = torch.tensor(labels, dtype=torch.float32)
+            draws_only = [nums for _, nums in valid_draws]
 
-            # initialize and train the model
-            model = LottoPredictionModel()
+            X = []
+            y = []
+
+            for i in range(len(draws_only) - window_size):
+                window = np.array(draws_only[i:i + window_size]).flatten()
+                target = np.array(draws_only[i + window_size])
+                X.append(window)
+                y.append(target)
+
+            X = np.array(X) / max_lotto_number 
+            y = np.array(y) - 1 
+
+            data_tensor = torch.tensor(X, dtype=torch.float32)
+            labels_tensor = torch.tensor(y, dtype=torch.long)
+
+            model = LottoModel(input_size=window_size * 6)
             train_model(model, data_tensor, labels_tensor, num_epochs=100, learning_rate=0.001)
 
-            # get the last set of numbers to predict the next ones
-            last_numbers = all_numbers[-1]  # use the most recent winning numbers
-            print(f"Last winning numbers: {last_numbers}")
+            last_window = np.array(draws_only[-window_size:]).flatten() / max_lotto_number
+            predicted_numbers = predict_next_numbers(model, last_window)
 
-            # predict the next winning numbers
-            predicted_numbers = predict_next_numbers(model, last_numbers)
-            predicted_numbers = predicted_numbers * np.max(data)  # denormalize back to original range
-
-            print(f"Predicted next winning numbers: {predicted_numbers.astype(int)}")  # ensure integers are displayed
+            print(f"Last winning numbers on {valid_draws[0][0].date()}: {draws_only[0]}")
+            print(f"Predicted next winning numbers: {predicted_numbers}\n")
         else:
             print("No data fetched.")
     except ValueError:
