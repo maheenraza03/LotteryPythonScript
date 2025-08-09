@@ -5,4 +5,7 @@ Using python, deep learning and neural networks, this script will ask you to inp
 
 ** The lottery is completely random, this script does not gurantee actual winning numbers (be fr).
 
+## To Run:
+ Run the app.py file
+
 ## Deployment: Coming soon
